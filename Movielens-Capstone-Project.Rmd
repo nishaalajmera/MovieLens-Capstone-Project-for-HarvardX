@@ -1,0 +1,554 @@
+---
+title: "Movielens Capstone Project"
+author: "Nishaal Ajmera"
+date: "18/05/2020"
+output: pdf_document
+---
+## Introduction
+Many companies especially those involved in e-commerce allow their clients to rate their products. Generally, users rate items in stars where 1 is the lowest and 5 is the highest rating given. These companies can then build recommendation systems from the data obtained to predict ratings that a customer give to a product. Therefore, if the customer is likely to give a high rating to a certain product then it will be recommended to that customer.  
+  In 2006, Netflix offered a challenge to the data science community to improve their recommendation system by 10%. The data analysis and algorithm used in this project is motivated by the winning teams strategy. The Netflix data is not open to public however the  GroupLens research lab generated their own database with over 20 million ratings for over 27000 movies by more than 138000 users. This project uses 10M version of the MovieLens dataset.  
+  The key goals of this project are:   
+  • to develop a machine learning algorithm that predicts the ratings that could be given by each user.  
+• to evaluate several algorithms using various approaches that would eliminate bias presented by the data. 
+• to produce a machine learning algorithm that gives the maximum accuracy by choosing the algorithm with the lowest root mean squared error (RMSE).
+
+In this project, the data has been split into two sets primarily **edx** and **validation**. **Edx** dataset is used to train, tune and evaluate the models. **Validation** dataset is used to predict the ratings from the final model and calculate the final RMSE. 
+
+## Data Analysis
+
+First part of the analysis shows how the data can be obtained. The edx and validation data sets are created here. 
+
+
+```{r Loading the data}
+################################
+# Create edx set, validation set
+################################
+
+# Note: this process could take a couple of minutes
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+
+# MovieLens 10M dataset:
+# https://grouplens.org/datasets/movielens/10m/
+# http://files.grouplens.org/datasets/movielens/ml-10m.zip
+
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings <- fread(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                 col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(levels(movieId))[movieId],
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+
+movielens <- left_join(ratings, movies, by = "movieId")
+
+# Validation set will be 10% of MovieLens data
+set.seed(1, sample.kind="Rounding")
+# if using R 3.5 or earlier, use `set.seed(1)` instead
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in validation set are also in edx set
+validation <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+# Add rows removed from validation set back into edx set
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+```
+
+### Understanding the Data
+```{r Understanding the data}
+#checking dimensions of edx 
+dim(edx)
+
+#checking the 5 rows of edx
+head(edx,5)
+
+#number of distinct movies and users in edx 
+edx %>% summarize(n_movieId=n_distinct(movieId),
+n_userId=n_distinct(userId))
+```
+Each row in the data represents a rating given by one user to one movie. 
+When the two numbers ie. the number of distinct movies and users are multiplied, a number larger than 700 million is obtained, yet the data table has about 9000055 rows. Since each row represents a rating, it implies that not every user rated every movie.
+
+### Movie Titles with Total Ratings
+Checking the movies with highest total ratings 
+```{r Movie titles with total ratings}
+#movie titles with total number of ratings
+edx %>% group_by(movieId, title) %>%
+  summarize(count = n()) %>%
+  arrange(desc(count))
+```
+
+### Data Modification
+The datasets are modified to allow exploratory analysis. A year and date columns are added. 
+```{r Data Modification}
+#modifying data sets to add a year column and date column 
+#year column is taken from title and date is modified from timestamp column 
+library(lubridate)
+edx<- edx %>% mutate(year = as.numeric(str_sub(title,-5,-2)),date= as_datetime(timestamp))
+validation<- validation %>% mutate(year = as.numeric(str_sub(title,-5,-2)),date= as_datetime(timestamp))
+
+# Viewing the first five columns of data sets
+head(edx,5)
+head(validation,5)
+```
+
+### Exploratory Analysis 
+In this section, various aspects of the data are explored  
+#### Ratings 
+```{r Ratings Frequency}
+edx %>%
+  group_by(rating) %>%
+  summarize(count = n()) %>%
+  ggplot(aes(x = rating, y = count)) + geom_line()+ ggtitle("Ratings Frequency")
+```
+Users tend to rate 3 and 4 more often. Half star ratings are less common than full star ratings
+
+#### Movies Distribution and Users Distribution
+```{r Movies and Users Distribution}
+edx %>% 
+  count(movieId) %>% 
+  ggplot(aes(n)) + 
+  geom_histogram(bins = 40, color = "black") + 
+  scale_x_log10() + 
+  ggtitle("Movies Distribution")
+
+edx %>% 
+  count(userId) %>% 
+  ggplot(aes(n)) + 
+  geom_histogram(bins = 40, color = "black") + 
+  scale_x_log10() + 
+  ggtitle("Users Distribution")
+```
+From the movies distribution, it is shown that some movies get rated more than the others. This can be explained because there are blockbuster movies that has many audience and artsy, independent movies watched by just a handful.  
+  From the users distribution, it can be inferred that some users are more active at rating movies than others
+  
+#### Year Effect
+```{r Year Effect}
+#plot to show total ratings given by year 
+edx %>% group_by(year) %>% summarize(n=n()) %>% ggplot(aes(year,n))+ geom_point()+geom_line() +ggtitle("Number of ratings given every year")
+
+
+edx %>% group_by(movieId) %>%
+  summarize(n = n(), year = as.character(first(year))) %>%
+  qplot(year, n, data = ., geom = "boxplot") +
+  coord_trans(y = "sqrt") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+It is observed that on average, movies that came out after 1993 get more ratings. It is also shown that recent movies,starting with 1993, the number of ratings decreases with year; the more recent a movie is, the less time users have had to rate it.  
+  The plots show that the most frequently rated movies tend to have above average ratings. A rationale for this is more people watch popular movies. The movies released post 1993 can be stratified by ratings per year and the average ratings are computed to confirm the aforementioned. 
+
+```{r Post 1993 year effect}
+#2018 is used as the end year to calculate the number of ratings per year
+edx %>% 
+  filter(year >= 1993) %>%
+  group_by(movieId) %>%
+  summarize(n = n(), years = 2018 - first(year),
+            title = title[1],
+            rating = mean(rating)) %>%
+  mutate(rate = n/years) %>%
+  ggplot(aes(rate, rating)) +
+  geom_point() +
+  geom_smooth()
+
+```
+A trend that the more often a movie is rated the higher its average rating is observed.
+
+#### Date Effect 
+```{r Date Effect}
+#analysis to check if there is any effect of date on the rating patterns
+#for easier analysis date columns in the datasets is rounded to the nearest week 
+edx<- edx %>% mutate(date = round_date(date, unit = "week"))
+validation<- validation %>% mutate(date = round_date(date, unit = "week"))
+
+edx %>% 
+  group_by(date) %>%
+  summarize(rating = mean(rating)) %>%
+  ggplot(aes(date, rating)) +
+  geom_point() +
+  geom_smooth()
+```
+There is seem to be some kind of date effect where there is an increase and decrease in the number of ratings accorfinh to different dates
+
+#### Training and Test Sets
+```{r Training and Test Sets}
+#Creating training set to train the algorithm and test set for assessment from edx data
+test_index <- createDataPartition(y = edx$rating, times = 1, p = 0.2, list = FALSE)
+train_set <- edx[-test_index,]
+test_set <- edx[test_index,]
+
+test_set <- test_set %>% 
+  semi_join(train_set, by = "movieId") %>%
+  semi_join(train_set, by = "userId")
+```
+
+#### Root Mean Squared Error (RMSE) function
+```{r Defining RMSE}
+#Defining RMSE
+RMSE <- function(true_ratings, predicted_ratings){
+  sqrt(mean((true_ratings - predicted_ratings)^2))
+}
+```
+
+### Model 1: Average
+A very basic model is used for the start with just the mean. This is a model that assumes the same rating for all movies and users with all the differences explained by random variation.
+```{r Basic Model}
+mu<- mean(train_set$rating)
+mu
+
+#RMSE with just the average
+naive_rmse<- RMSE(test_set$rating,mu)
+naive_rmse
+
+#Tibble to compare RMSE
+rmse_results <- tibble(model = "Average", RMSE = naive_rmse)
+rmse_results
+```
+
+### Model 2: Movie Effect
+As shown previously, some movies are rated higher than others. Here **b_i** represents the average ranking for movie i. 
+```{r Movie Effect}
+#Movie effect bias (b_i) estimating b_i
+movie_avg<- train_set %>% group_by(movieId) %>% summarize(b_i=mean(rating-mu))
+
+qplot(b_i, data = movie_avg, bins = 30, color = I("black"))
+
+#RMSE for Movie effect
+predicted_ratings <- mu + test_set %>% 
+  left_join(movie_avg, by='movieId') %>%
+  pull(b_i)
+movie_rmse<- RMSE(test_set$rating,predicted_ratings)
+
+rmse_results<- bind_rows(rmse_results,
+                         tibble(model="Movie Effect",RMSE=movie_rmse))
+rmse_results
+```
+
+
+### Model 3: User Effect
+In the plot shown above, it can be seen that some users are cranky giving low ratings to good movies and some seem to love every movie by rating each one. Here **b_u** represents user specific effect
+```{r User Effect}
+#Analysing user effect
+train_set %>% 
+  group_by(userId) %>% 
+  summarize(b_u = mean(rating)) %>%
+  ggplot(aes(b_u)) + 
+  geom_histogram(bins = 30, color = "black")
+
+# User effect bias, estimating b_u
+user_avg <- train_set %>% 
+  left_join(movie_avg, by='movieId') %>%
+  group_by(userId) %>%
+  summarize(b_u = mean(rating - mu - b_i))
+
+qplot(b_u, data = user_avg, bins = 30, color = I("black"))
+
+
+predicted_ratings <- test_set %>% 
+  left_join(movie_avg, by='movieId') %>%
+  left_join(user_avg, by='userId') %>%
+  mutate(pred = mu + b_i + b_u) %>%
+  pull(pred)
+
+movieuser_rmse<- RMSE(test_set$rating,predicted_ratings)
+
+rmse_results<- bind_rows(rmse_results,
+                         tibble(model="Movie and User Effect",RMSE=movieuser_rmse))
+rmse_results
+```
+
+### Regularization 
+Regularization can reduce noisy results which increase the RMSE. Large estimates that are formed using small sample sizes can be penalized. These penalized estimates can improve the RMSE greatly. 
+
+#### Model 4: Regularized Movie and User Effect
+```{r Regularized Movie and User Effect}
+# Perform cross-validation to choose optimal tuning parameter, lambda
+lambdas <- seq(0, 10, 0.25)
+
+rmses <- sapply(lambdas, function(l){
+  
+  mu <- mean(train_set$rating)
+  
+  b_i <- train_set %>% 
+    group_by(movieId) %>%
+    summarize(b_i = sum(rating - mu)/(n()+l))
+  
+  b_u <- train_set %>% 
+    left_join(b_i, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_i - mu)/(n()+l))
+  
+  predicted_ratings <- 
+    test_set %>% 
+    left_join(b_i, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    mutate(pred = mu + b_i + b_u) %>%
+    pull(pred)
+  
+  return(RMSE(predicted_ratings, test_set$rating))
+})
+
+# RMSE versus lambda plot to select lambda at which RMSE is smallest 
+qplot(lambdas, rmses)  
+lambda<- lambdas[which.min(rmses)]
+lambda
+
+# Use lambda to evaluate regularized b_i and b_u 
+b_i <- train_set %>% 
+  group_by(movieId) %>%
+  summarize(b_i = sum(rating - mu)/(n()+lambda))
+
+b_u <- train_set %>% 
+  left_join(b_i, by="movieId") %>%
+  group_by(userId) %>%
+  summarize(b_u = sum(rating - b_i - mu)/(n()+lambda))
+
+#apply regularized model to predict ratings on test set
+predicted_ratings <- 
+  test_set %>% 
+  left_join(b_i, by = "movieId") %>%
+  left_join(b_u, by = "userId") %>%
+  mutate(pred = mu + b_i + b_u) %>%
+  pull(pred)
+
+#Compute RMSE and add it to results tibble 
+reg_movieuser_rmse<- RMSE(test_set$rating,predicted_ratings)
+rmse_results<- bind_rows(rmse_results,
+                         tibble(model="Regularized Movie and User Effect",RMSE=reg_movieuser_rmse))
+
+print.data.frame(rmse_results)
+
+```
+
+#### Model 5: Regularized Movie, User and Year Effect
+In this model, the year effect is added as seen above that there is a year effect on the ratings given by the users. The year specific effect is represented by **b_r**.
+```{r  Regularized Movie, User and Year Effect}
+
+lambdas <- seq(0, 10, 0.25)
+
+ rmses <- sapply(lambdas, function(l){
+  
+  mu <- mean(train_set$rating)
+  
+  b_i <- train_set %>% 
+    group_by(movieId) %>%
+    summarize(b_i = sum(rating - mu)/(n()+l))
+  
+  b_u <- train_set %>% 
+    left_join(b_i, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_i - mu)/(n()+l))
+  
+  b_r<- train_set %>% 
+    left_join(b_i,by="movieId") %>%
+    left_join(b_u,by="userId") %>% 
+    group_by(year) %>%
+    summarize(b_r=sum(rating - b_i - b_u - mu)/(n()+l))
+  
+  predicted_ratings <- 
+    test_set %>% 
+    left_join(b_i, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    left_join(b_r,by="year") %>% 
+    mutate(pred = mu + b_i + b_u + b_r) %>%
+    pull(pred)
+  
+  return(RMSE(predicted_ratings, test_set$rating))
+})
+
+# RMSE versus lambda plot to select lambda at which RMSE is smallest 
+qplot(lambdas, rmses)  
+lambda<- lambdas[which.min(rmses)]
+lambda
+
+# Use lambda to evaluate regularized b_i, b_u and b_r
+b_i <- train_set %>% 
+  group_by(movieId) %>%
+  summarize(b_i = sum(rating - mu)/(n()+lambda))
+
+b_u <- train_set %>% 
+  left_join(b_i, by="movieId") %>%
+  group_by(userId) %>%
+  summarize(b_u = sum(rating - b_i - mu)/(n()+lambda))
+
+b_r<- train_set %>% 
+  left_join(b_i,by="movieId") %>%
+  left_join(b_u,by="userId") %>% 
+  group_by(year) %>%
+  summarize(b_r=sum(rating - b_i - b_u - mu)/(n()+lambda))
+
+
+#apply regularized model to predict ratings on test set
+predicted_ratings <- 
+  test_set %>% 
+  left_join(b_i, by = "movieId") %>%
+  left_join(b_u, by = "userId") %>%
+  left_join(b_r,by="year") %>% 
+  mutate(pred = mu + b_i + b_u + b_r) %>%
+  pull(pred)
+
+#Compute RMSE and add it to results tibble 
+reg_movieuseryear_rmse<- RMSE(test_set$rating,predicted_ratings)
+rmse_results<- bind_rows(rmse_results,
+                         tibble(model="Regularized Movie, User and Year Effect",RMSE=reg_movieuseryear_rmse))
+print.data.frame(rmse_results)
+
+```
+
+#### Model 6: Regularized Movie, User, Year and Date to the nearest week effect 
+As seen in the RMSE results, it has greatly improved. However, the RMSE could be further reduced. In this model, regularized date effect is added to the model. The date specific effect is represented by **b_t**.
+```{r Regularized Movie, User, Year and Date to the nearest week effect }
+lambdas <- seq(0, 10, 0.25)
+rmses <- sapply(lambdas, function(l){
+  
+  mu <- mean(train_set$rating)
+
+b_i <- train_set %>% 
+  group_by(movieId) %>%
+  summarize(b_i = sum(rating - mu)/(n()+l))
+
+b_u <- train_set %>% 
+  left_join(b_i, by="movieId") %>%
+  group_by(userId) %>%
+  summarize(b_u = sum(rating - b_i - mu)/(n()+l))
+
+b_r<- train_set %>% 
+  left_join(b_i,by="movieId") %>%
+  left_join(b_u,by="userId") %>% 
+  group_by(year) %>%
+  summarize(b_r=sum(rating - b_i - b_u - mu)/(n()+l))
+
+b_t<- train_set %>% 
+  left_join(b_i,by="movieId") %>%
+  left_join(b_u,by="userId") %>% 
+  left_join(b_r,by="year") %>%
+  group_by(date) %>%
+  summarize(b_t=sum(rating - b_i - b_u - b_r - mu)/(n()+l))
+
+predicted_ratings <- 
+  test_set %>% 
+  left_join(b_i, by = "movieId") %>%
+  left_join(b_u, by = "userId") %>%
+  left_join(b_r,by="year") %>% 
+  left_join(b_t,by="date") %>% 
+  mutate(pred = mu + b_i + b_u + b_r + b_t) %>%
+  pull(pred)
+
+return(RMSE(predicted_ratings, test_set$rating))
+})
+
+# RMSE versus lambda plot to select lambda at which RMSE is smallest 
+qplot(lambdas, rmses)  
+lambda<- lambdas[which.min(rmses)]
+lambda
+
+
+# Use lambda to evaluate regularized b_i, b_u, b_r and b_t
+b_i <- train_set %>% 
+  group_by(movieId) %>%
+  summarize(b_i = sum(rating - mu)/(n()+lambda))
+
+b_u <- train_set %>% 
+  left_join(b_i, by="movieId") %>%
+  group_by(userId) %>%
+  summarize(b_u = sum(rating - b_i - mu)/(n()+lambda))
+
+b_r<- train_set %>% 
+  left_join(b_i,by="movieId") %>%
+  left_join(b_u,by="userId") %>% 
+  group_by(year) %>%
+  summarize(b_r=sum(rating - b_i - b_u - mu)/(n()+lambda))
+
+b_t<- train_set %>% 
+  left_join(b_i,by="movieId") %>%
+  left_join(b_u,by="userId") %>% 
+  left_join(b_r,by="year") %>%
+  group_by(date) %>%
+  summarize(b_t=sum(rating - b_i - b_u - b_r - mu)/(n()+lambda))
+
+
+#apply regularized model to predict ratings on test set
+predicted_ratings <- 
+  test_set %>% 
+  left_join(b_i, by = "movieId") %>%
+  left_join(b_u, by = "userId") %>%
+  left_join(b_r,by="year") %>% 
+  left_join(b_t,by="date") %>% 
+  mutate(pred = mu + b_i + b_u + b_r + b_t) %>%
+  pull(pred)
+
+
+#Compute RMSE and add it to results tibble 
+reg_movieuseryeardate_rmse<- RMSE(test_set$rating,predicted_ratings)
+rmse_results<- bind_rows(rmse_results,
+                         tibble(model="Regularized Movie, User, Year and Date Effect",RMSE=reg_movieuseryeardate_rmse))
+print.data.frame(rmse_results) #Choose the model with the lowest RMSE
+
+
+```
+
+### Results 
+```{r RMSE tibble}
+print.data.frame(rmse_results)
+```
+From the above results it is observed that the RMSE reduces when the year(**b_r**) and date(**b_t**) effects are taken into account in the regularized model. Therefore, the final model used to predict the ratings for the **Validation** dataset will be the **Regularized Movie, User, Year and Date effect* model. 
+
+#### Applying Final Model
+```{r Prediction on Validation set}
+#Predict ratings of Validation
+lambda
+
+mu <- mean(edx$rating)
+
+b_i <- edx %>% 
+  group_by(movieId) %>%
+  summarize(b_i = sum(rating - mu)/(n()+lambda))
+
+b_u <- edx %>% 
+  left_join(b_i, by="movieId") %>%
+  group_by(userId) %>%
+  summarize(b_u = sum(rating - b_i - mu)/(n()+lambda))
+
+b_r<- edx %>% 
+  left_join(b_i,by="movieId") %>%
+  left_join(b_u,by="userId") %>% 
+  group_by(year) %>%
+  summarize(b_r=sum(rating - b_i - b_u - mu)/(n()+lambda))
+
+b_t<- edx %>% 
+  left_join(b_i,by="movieId") %>%
+  left_join(b_u,by="userId") %>% 
+  left_join(b_r,by="year") %>%
+  group_by(date) %>%
+  summarize(b_t=sum(rating - b_i - b_u - b_r - mu)/(n()+lambda))
+
+
+#apply regularized model to predict ratings on test set
+predicted_ratings <- 
+  validation %>% 
+  left_join(b_i, by = "movieId") %>%
+  left_join(b_u, by = "userId") %>%
+  left_join(b_r,by="year") %>% 
+  left_join(b_t,by="date") %>% 
+  mutate(pred = mu + b_i + b_u + b_r + b_t) %>%
+  pull(pred)
+
+#Final RMSE
+RMSE(validation$rating,predicted_ratings)
+
+```
+
+### Conclusion
+In this project various models have been tested to build a recommendation system for users to watch movies. The RMSE results show that by taking the different bias that might exist such as the Movie, User, Year and Date effects in to account the RMSE value has greatly reduced when compared to using the mean only. Regularization greatly helped in minimizing noisy data effects. To conclude the final model can used to give recommendations to users since it has a small RMSE value. In the future some analysis over the genres can be done to investigate if there is any effects of different genres on the ratings given.
